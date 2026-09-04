@@ -1,0 +1,9 @@
+# logs / runtime artifacts (may contain the local user's account data)
+logs/
+*.log
+
+# node
+node_modules/
+
+# OS
+.DS_Store

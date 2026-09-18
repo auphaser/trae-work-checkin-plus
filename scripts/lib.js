@@ -62,19 +62,79 @@ function loadAuth() {
 function devId() {
   return crypto.createHash("sha256").update(crypto.randomBytes(32).toString("hex")).digest("hex").substring(0, 32);
 }
-function buildHeaders(token, uid) {
+
+/**
+ * 读取本机稳定的设备标识，避免每次请求随机生成导致指纹漂移。
+ * 优先从 storage.json 读取；读不到才回退到随机值。
+ * 返回 { machineId, deviceId }：
+ *   machineId = telemetry.machineId（客户端「关于」里的 64 位设备ID）
+ *   deviceId  = storage 里 iCubeAuthInfo://icube-dc:<n> 键名中的数字 Device Id
+ */
+function readDeviceIds() {
+  const out = {};
+  for (const p of storageCandidates()) {
+    if (!fs.existsSync(p)) continue;
+    const s = JSON.parse(fs.readFileSync(p, "utf8"));
+    const machineId = s["telemetry.machineId"];
+    if (typeof machineId === "string" && machineId) out.machineId = machineId;
+    for (const k of Object.keys(s)) {
+      const m = /^iCubeAuthInfo:\/\/icube-dc:(\d+)$/.exec(k);
+      if (m && m[1]) { out.deviceId = m[1]; break; }
+    }
+    break;
+  }
+  return out;
+}
+
+/**
+ * 读取本端已安装客户端的版本号（storage 里的 iCubeLastVersion，格式如 2.3.40353），
+ * 跟随各安装端真实版本，而非硬编码。读不到时返回 null，交由调用方回退默认值。
+ */
+function readClientVersion() {
+  let version = null;
+  for (const p of storageCandidates()) {
+    if (!fs.existsSync(p)) continue;
+    const s = JSON.parse(fs.readFileSync(p, "utf8"));
+    const v = s["iCubeLastVersion"];
+    if (typeof v === "string" && v.trim()) { version = v.trim(); }
+    break;
+  }
+  if (!version) return null;
+  return {
+    ideVersion: version,
+    ideVersionCode: version.replace(/\./g, "") || version,
+  };
+}
+
+/**
+ * 按本机真实系统生成平台与系统版本头，安装到任何机器都会上报对应当前系统；
+ * 而非硬编码为 Windows。
+ */
+function detectOs() {
+  const platform = process.platform;
+  const release = os.release();
+  let deviceType = "unknown";
+  let osVersion = platform;
+  if (platform === "darwin") { deviceType = "mac"; osVersion = `Darwin ${release}`; }
+  else if (platform === "win32") { deviceType = "windows"; osVersion = `Windows ${release}`; }
+  else if (platform === "linux") { deviceType = "linux"; osVersion = `Linux ${release}`; }
+  return { deviceType, osVersion };
+}
+
+function buildHeaders(token, uid, fp = {}) {
+  const osInfo = detectOs();
   return {
     "Authorization": `Cloud-IDE-JWT ${token}`,
     "X-Cloudide-Token": token,
     "x-uid": String(uid),
     "x-app-id": "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
-    "x-device-id": devId(),
-    "x-machine-id": crypto.randomBytes(32).toString("hex"),
+    "x-device-id": fp.deviceId || devId(),
+    "x-machine-id": fp.machineId || crypto.randomBytes(32).toString("hex"),
     "x-request-id": crypto.randomUUID(),
-    "x-ide-version": "3.3.67",
-    "x-ide-version-code": "20260401",
-    "x-device-type": "windows",
-    "x-os-version": "Windows 10",
+    "x-ide-version": fp.ideVersion || "3.3.67",
+    "x-ide-version-code": fp.ideVersionCode || "20260401",
+    "x-device-type": osInfo.deviceType,
+    "x-os-version": osInfo.osVersion,
     "Content-Type": "application/json",
     "Accept": "application/json",
   };
@@ -89,6 +149,14 @@ async function createClient() {
   const auth = loadAuth();
   const host = auth.host || "https://api.trae.cn";
   const uid = String(auth.userId || "");
+  const device = readDeviceIds();
+  const ver = readClientVersion();
+  const fingerprint = {
+    deviceId: device.deviceId,
+    machineId: device.machineId,
+    ideVersion: ver && ver.ideVersion,
+    ideVersionCode: ver && ver.ideVersionCode,
+  };
   let token = auth.token;
   let refreshing = null;
 
@@ -124,7 +192,7 @@ async function createClient() {
     userId: uid,
     async post(p, body) {
       const doFetch = () =>
-        fetch(`${host}${p}`, { method: "POST", headers: buildHeaders(token, uid), body: JSON.stringify(body) });
+        fetch(`${host}${p}`, { method: "POST", headers: buildHeaders(token, uid, fingerprint), body: JSON.stringify(body) });
       let resp = await doFetch();
       if (resp.status === 401) { await refresh(); resp = await doFetch(); }
       return resp.json().then((j) => ({ status: resp.status, json: j })).catch(() => ({ status: resp.status, json: {} }));

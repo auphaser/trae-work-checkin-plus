@@ -10,6 +10,8 @@
 - **余额查询**：`node scripts/balance.js`（`--json` 输出原始数据）—— 只读，不修改任何数据。
 - **自动读本地登录态**：读客户端 `storage.json` 中的 `iCubeAuthInfo://icube.cloudide`（`tc` 加密格式）取令牌，临期自动用 refreshToken 换新，无需重复登录。
 - **系统级定时**：`scripts/run-checkin.sh` 是 cron / launchd 的包装脚本，运行不依赖客户端是否打开。
+- **本机指纹一致**：`x-device-id` / `x-machine-id` 读取本机 storage 的真实设备标识（非随机），平台/系统版本按运行端真实 OS 上报，版本号跟随安装端构建号，降低被识别为旁路请求的风险。
+- **瞬时限流自动重试**：`run-checkin.sh` 内置退避重试，遇到「参与用户太多」等瞬时频控会自动重试（幂等，不会重复发放）。
 
 ## 安装（作为 Skill 导入）
 
